@@ -121,6 +121,8 @@ class ChamferDistance(Metric):
     def get_results(self) -> Dict:
         return {"dist1" : np.mean(self.dist1), "dist2": np.mean(self.dist2)}
 
+
+
 class Renderer():
     def __init__(self, rendering :str):
         self.rendering = rendering
