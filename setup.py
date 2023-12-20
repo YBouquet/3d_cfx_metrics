@@ -1,10 +1,8 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='metrics',
+    name='my_metrics',
     version='0.1',
     packages=find_packages(),
-    install_requires=[
-        'numpy',
-    ],
+    insatll_requires=[]
 )
