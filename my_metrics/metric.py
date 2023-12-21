@@ -101,11 +101,10 @@ class AsyncMetric(Metric, metaclass = ABCMeta):
     def __init__(self, experiment: str, metric :str = None):
         super().__init__(experiment, metric)
         self.pool = Pool(60)
-        self.lock = asyncio.Lock()
 
     def evaluate(self, dataloader: DataLoader, verbose: bool = True) -> Dict:
         async def async_aux(dataloader, verbose):
-            batches = [self.async_measure(self.lock, Batch(batch)) for batch in dataloader]
+            batches = [self.async_measure(Batch(batch)) for batch in dataloader]
             await asyncio.gather(*batches)
             
         asyncio.run(async_aux(dataloader, verbose))
@@ -117,7 +116,7 @@ class AsyncMetric(Metric, metaclass = ABCMeta):
         return results
       
     @abstractmethod
-    async def async_measure(self, lock, batch : Batch) -> None:
+    async def async_measure(self, batch : Batch) -> None:
         pass
 
 class FlipRate(SyncMetric):
@@ -218,7 +217,7 @@ class LPIPS(AsyncMetric):
         async_result = self.pool.starmap_async(generate_image, final_pool_params)
         return async_result
     
-    async def async_measure(self, lock, batch: Batch) -> None:
+    async def async_measure(self, batch: Batch) -> None:
         og_data, ce_data = batch.pointclouds
         sample_ids, ce_ids = batch.sample_ids, batch.ce_ids
         awaitable_og_images = self.__render(og_data, [f"{sample_id:04d}/" for sample_id in sample_ids])
@@ -226,7 +225,7 @@ class LPIPS(AsyncMetric):
         
         awaitable_og_images.wait()
         awaitable_ce_images.wait()
-
+        """
         og_images = torch.cat(awaitable_og_images.get(), dim = 0)
         ce_images = torch.cat(awaitable_ce_images.get(), dim = 0)
         _, *img_dim = og_images.shape
@@ -234,70 +233,67 @@ class LPIPS(AsyncMetric):
         og_images = og_images.reshape(-1, nRotation, *img_dim)
         ce_images = ce_images.reshape(-1, nRotation, *img_dim)
 
-        async with lock:
+        async with self.lock:
             for (sample_id, ce_id, og, ce) in zip(sample_ids, ce_ids, og_images, ce_images):
                 if sample_id not in self.results:
                     self.results[sample_id].update({"images": og})
                 self.results[sample_id][ce_id].update({"images": ce, LPIPS_DIV: []})
+        """
 
     @torch.no_grad()
     def get_results(self) -> dict:
-        for sample_id in self.results.keys():
-            og_images = self.results[sample_id]["images"].cuda()
-            ces = [ce for ce in self.results[sample_id].keys() if ce != "images"]
-            for i in range(len(ces)):
-                ce_images = self.results[sample_id][ces[i]]["images"].cuda()
-                self.results[sample_id][ces[i]][LPIPS_PROX] = self.lpips(og_images, ce_images).cpu().mean().item()
-                for j in range(i+1, len(ces)):
-                    lpips_result = self.lpips(ce_images, self.results[sample_id][ces[j]]["images"].cuda()).cpu().mean().item()
-                    self.results[sample_id][ces[i]][LPIPS_DIV].append(lpips_result.mean().item())
-                    self.results[sample_id][ces[j]][LPIPS_DIV].append(lpips_result.mean().item())                
+        self.__proximity()
+        self.__diversity()
         return self.results
-
-"""    
+    
     def __proximity(self):
         sample_dirs = os.listdir(self.output_dir) #dir of the metric
         for sample_dir in tqdm(sample_dirs):
-            current_dir = os.path.join(self.output_dir, current_dir)
+            current_dir = os.path.join(self.output_dir, sample_dir)
             sample_listdir = os.listdir(current_dir)
             sample_img_dirs = [f for f in sample_listdir if f.endswith(".png")]
             sample_images = []
             for f in sample_img_dirs:
-                img = torch.from_numpy(np.array(Image.open(os.path.join(sample_dir, f)))).permute(2,0,1).unsqueeze(0).float().cuda() / 255.
+                img = torch.from_numpy(np.array(Image.open(os.path.join(current_dir, f)))).permute(2,0,1).unsqueeze(0).float().cuda() / 255.
                 sample_images.append(img)
             sample_images = torch.cat(sample_images, dim=0)
-
-            ce_dirs = [os.path.join(current_dir, f) for f in sample_listdir if not(f.endswith(".png"))]
+            assert(sample_images.shape[0] == 6)
+            ce_dirs = [f for f in sample_listdir if not(f.endswith(".png"))]
             for ce_dir in ce_dirs:
-                image_dirs = [os.path.join(ce_dir, f) for f in os.listdir(ce_dir)]
+                image_dirs = [os.path.join(current_dir, ce_dir, f) for f in os.listdir(os.path.join(current_dir,ce_dir))]
                 ce_images = []
                 for image_dir in image_dirs:
                     image = torch.from_numpy(np.array(Image.open(image_dir))).permute(2,0,1).unsqueeze(0).float().cuda() / 255.
                     ce_images.append(image)
                 ce_images = torch.cat(ce_images, dim=0)
-                lpips_result = self.lpips(sample_images, ce_images)
-                self.results["proximity"][sample_dir].append(lpips_result.mean().item())
+                assert(ce_images.shape[0] == sample_images.shape[0])
+                lpips_result = self.lpips(sample_images.cuda(), ce_images.cuda())
+                self.results[LPIPS_PROX][sample_dir][ce_dir] = lpips_result.cpu().mean().item()
 
     def __diversity(self):
         sample_dirs = os.listdir(self.output_dir) #dir of the metric
         for sample_dir in tqdm(sample_dirs):
             current_dir = os.path.join(self.output_dir, sample_dir)
-            ce_dirs = [os.path.join(sample_dir, f) for f in os.listdir(current_dir) if not(f.endswith(".png"))]
-            all_ce_images = []
+            ce_dirs = [f for f in os.listdir(current_dir) if not(f.endswith(".png"))]
             if len(ce_dirs) >= 2:
-                ce_images = []
+                all_ce_images = []
                 for ce_dir in ce_dirs:
-                    image_dirs = [os.path.join(ce_dir, f) for f in os.listdir(ce_dir)]
+                    ce_images = []
+                    image_dirs = [os.path.join(current_dir, ce_dir, f) for f in os.listdir(os.path.join(current_dir, ce_dir))]
                     for image_dir in image_dirs:
                         image = torch.from_numpy(np.array(Image.open(image_dir))).permute(2,0,1).unsqueeze(0).float().cuda() / 255.
                         ce_images.append(image)
                     all_ce_images.append(torch.cat(ce_images, dim=0))
 
                 for i in range(len(all_ce_images)):
+                    self.results[LPIPS_DIV][sample_dir][ce_dirs[i]] = {}
+                    
+                for i in range(len(all_ce_images)):
                     for j in range(i+1, len(all_ce_images)):
-                        lpips_result = self.lpips(all_ce_images[i], all_ce_images[j])
-                        self.results["diversity"][sample_dir].append(lpips_result.mean().item())
-
+                        lpips_result = self.lpips(all_ce_images[i].cuda(), all_ce_images[j].cuda())
+                        self.results[LPIPS_DIV][sample_dir][ce_dirs[i]][ce_dirs[j]] = lpips_result.cpu().mean().item()
+                        self.results[LPIPS_DIV][sample_dir][ce_dirs[j]][ce_dirs[i]] = lpips_result.cpu().mean().item()
+"""
 class LPIPS(SyncMetric):
     def __init__(self, experiment: str, rendering_method: str): 
         super().__init__(experiment, metric="lpips")
