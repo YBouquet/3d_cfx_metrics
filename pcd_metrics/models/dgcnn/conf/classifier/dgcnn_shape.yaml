@@ -1,0 +1,9 @@
+model: "dgcnn"
+
+dropout: 0.5
+num_points: 2048
+k : 40
+emb_dims: 1024
+use_sgd : True
+
+

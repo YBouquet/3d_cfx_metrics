@@ -1,0 +1,16 @@
+type: Dataset #Dataser or MultiDataset
+
+params: 
+  root : "/cvlabdata2/home/ybouquet/project/latentspace/data/pcd/"
+  dataset_name : ???
+  split : ???
+  num_points : 2048
+  num_channels : 3
+
+  class_choice : Null
+
+  segmentation: False
+  random_rotate: False
+  random_jitter: False
+  random_translate: False
+  type: ${db.type}

@@ -1,0 +1,4 @@
+params:
+  dataset_name: "shapenetcorev2"
+  split: 'train'
+

@@ -23,6 +23,11 @@ from .dataset import Batch
 import pdb
 
 
+from .models.dgcnn.model import DGCNN
+
+from omegaconf import OmegaConf
+import yaml
+
 RENDERING_MATPLOTLIB = "matplotlib"
 RENDERING_MITSUBA = "mitsuba"
 
@@ -498,7 +503,75 @@ class LPIPS(AsyncMetric):
                         lpips_result = self.lpips(all_ce_images[i].cuda(), all_ce_images[j].cuda())
                         self.results[LPIPS_DIV][sample_dir][ce_dirs[i]][ce_dirs[j]] = lpips_result.cpu().mean().item()
                         self.results[LPIPS_DIV][sample_dir][ce_dirs[j]][ce_dirs[i]] = lpips_result.cpu().mean().item()
+
+class FID(SyncMetric):
+    def __init__(self, experiment: str, device: str = 'cuda:0'):
+        super().__init__(experiment, metric = "fid")
+        args_classifier = {
+            'dropout': 0.0,
+            'num_points': 2048,
+            'k' : 40,
+            'emb_dims': 1024,
+            'use_sgd' : True,
+            'eval': True,
+        }
+        filename = os.path.join(os.path.dirname(__file__), 'checkpoints/dgcnn_2048_backup/models/model.t7')
+        self.model = DGCNN(OmegaConf.create(args_classifier), output_channels=55)
+        self.model.load_state_dict(torch.load(filename))
+        self.model.to(device)
+        self.model = self.model.eval()
+        self.og_features_cov_sum = float(0)
+        self.og_features_sum = float(0)
+        self.og_features_num_samples = int(0)
+        self.ce_features_cov_sum = float(0)
+        self.ce_features_sum = float(0)
+        self.ce_features_num_samples = int(0)
+
+    def measure(self, batch: Batch) -> None:
+        og_data, ce_data = batch.pointclouds
+        og_data = og_data.permute(0,2,1).cuda()
+        ce_data = ce_data.permute(0,2,1).cuda()
+        og_data = self.model(og_data)
+        ce_data = self.model(ce_data)
+        self.orig_dtype = og_data.dtype
+        self.__update(og_data)
+        self.__update(ce_data, real = False)
+
+
+    def get_results(self) -> Dict:
+        if self.real_features_num_samples < 2 or self.fake_features_num_samples < 2:
+            raise RuntimeError("More than one sample is required for both the real and fake distributed to compute FID")
+        mean_og = (self.og_features_sum / self.og_features_num_samples).unsqueeze(0)
+        mean_ce = (self.ce_features_sum / self.ce_features_num_samples).unsqueeze(0)
+
+        cov_og_num = self.og_features_cov_sum - self.og_features_num_samples * mean_og.t().mm(mean_og)
+        cov_og = cov_og_num / (self.og_features_num_samples - 1)
+        cov_ce_num = self.ce_features_cov_sum - self.ce_features_num_samples * mean_ce.t().mm(mean_ce)
+        cov_ce = cov_ce_num / (self.ce_features_num_samples - 1)
+        
+        a = (mean_og.squeeze(0) - mean_ce.squeeze(0)).square().sum(dim=-1)
+        b = cov_og.trace() + cov_ce.trace()
+        c = torch.linalg.eigvals(cov_og @ cov_ce).sqrt().real.sum(dim=-1)
+
+        return (a + b - 2 * c).to(self.orig_dtype)
+
+    
+    def __update(self, features : torch.Tensor, real = True):
+        features = features.double()
+
+        if features.dim() == 1:
+            features = features.unsqueeze(0)
+        if real:
+            self.og_features_sum += features.sum(dim=0)
+            self.og_features_cov_sum += features.t().mm(features)
+            self.og_features_num_samples += features.shape[0]
+        else:
+            self.ce_features_sum += features.sum(dim=0)
+            self.ce_features_cov_sum += features.t().mm(features)
+            self.ce_features_num_samples += features.shape[0]
+    
 """
+
 class LPIPS(SyncMetric):
     def __init__(self, experiment: str, rendering_method: str): 
         super().__init__(experiment, metric="lpips")
