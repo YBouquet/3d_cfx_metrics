@@ -1,10 +1,41 @@
 import os
 import pickle
-import numpy as np
 from tqdm import tqdm
 from collections import defaultdict
 from torch.utils.data import Dataset
-from typing import Dict 
+from typing import Dict, List, Tuple
+import torch
+SFX_PCD = "point_cloud_"
+SFX_LATENT = "latent_code_"
+PFX_CE = "ce"
+PFX_OG = "original"
+
+class Batch():
+    def __init__(self, batch: Dict):
+        self.data = batch
+
+    @property
+    def pointclouds(self) -> Tuple[torch.Tensor]:
+        return self.data[SFX_PCD + PFX_OG], self.data[SFX_PCD + PFX_CE]
+    
+    @property
+    def latent_codes(self) -> Tuple[torch.Tensor]:
+        return self.data[SFX_LATENT + PFX_OG], self.data[SFX_LATENT + PFX_CE]
+    
+    @property
+    def sample_ids(self) -> List[int]:
+        return self.data["sample_id"]
+
+    @property
+    def ce_ids(self) -> List[int]:
+        return self.data["ce_id"]
+    
+    @property
+    def flipped(self) -> List[bool]:
+        flip_epoch = self.data["number_of_steps_flip"]
+        max_epochs = self.data["max_number_of_steps"]
+        return [(i<n) * 1 for i, n in zip(flip_epoch, max_epochs)]
+    
 
 class CounterFactualData(Dataset):
     def __init__(self, method_folder: str) -> None:

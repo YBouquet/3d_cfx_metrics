@@ -4,8 +4,50 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 import mitsuba as mi
 mi.set_variant("scalar_rgb")
 import pdb
+
+
 class Renderer():
+    """
+    Renderer class for visualizing point clouds.
+
+    This class provides methods to render point clouds using either Mitsuba or Matplotlib.
+
+    Attributes:
+        rendering (str): The rendering method to use (either "mitsuba" or "matplotlib").
+        xml_head (str): Mitsuba XML template for scene configuration.
+        xml_ball_segment (str): Mitsuba XML template for rendering a sphere segment.
+        xml_tail (str): Mitsuba XML template for scene ending.
+
+    Methods:
+        __init__(self, rendering: str):
+            Initializes a Renderer object with the specified rendering method.
+
+        __standardize_bbox(self, pcd: np.ndarray) -> np.ndarray:
+            Standardizes the bounding box of the point cloud.
+
+        __colormap(self, x, y, z) -> List[float]:
+            Generates a colormap based on the x, y, and z coordinates.
+
+        __render_mitsuba(self, pcd: np.ndarray) -> np.ndarray:
+            Renders a point cloud using Mitsuba.
+
+        __render_matplotlib(self, pcd: np.ndarray, elevation_angle: int = 90, azimuthal_angle: int = -90) -> np.ndarray:
+            Renders a point cloud using Matplotlib.
+
+        apply(self, pcd: np.ndarray) -> np.ndarray:
+            Applies the specified rendering method to render the point cloud.
+
+    Note:
+        The Mitsuba rendering method requires the Mitsuba renderer library.
+
+    """
     def __init__(self, rendering :str):
+        """
+        Initializes a Renderer object with the specified rendering method.
+
+        Parameters:
+            rendering (str): The rendering method to use (either "mitsuba" or "matplotlib").
+        """
         self.rendering = rendering
         self.xml_head = \
         """
@@ -93,6 +135,15 @@ class Renderer():
         return [vec[0], vec[1], vec[2]]
 
     def __render_mitsuba(self, pcd : np.array) -> np.array: #8UINT RGB
+        """
+        Renders a point cloud using Mitsuba.
+
+        Parameters:
+            pcd (np.array): The input point cloud.
+
+        Returns:
+            np.array: The rendered image.
+        """
         xml_segments = [self.xml_head]
         pcd = self.__standardize_bbox(pcd)
         #pcd = pcd[:,[1,0,2]]
@@ -116,6 +167,17 @@ class Renderer():
         return image_np
     
     def __render_matplotlib(self, pcd : np.array, elevation_angle: int = 90, azimuthal_angle: int = -90) -> np.array:
+        """
+        Renders a point cloud using Matplotlib.
+
+        Parameters:
+            pcd (np.array): The input point cloud.
+            elevation_angle (int): The elevation angle for the 3D plot (default: 90).
+            azimuthal_angle (int): The azimuthal angle for the 3D plot (default: -90).
+
+        Returns:
+            np.array: The rendered image.
+        """
         # Load and standardize point cloud
         pcd = self.__standardize_bbox(pcd)
 
@@ -140,6 +202,15 @@ class Renderer():
         return np_image
     
     def apply(self, pcd : np.array):
+        """
+        Applies the specified rendering method to render the point cloud.
+
+        Parameters:
+            pcd (np.array): The input point cloud.
+
+        Returns:
+            np.array: The rendered image.
+        """
         if self.rendering == "mitsuba":
             return self.__render_mitsuba(pcd)
         elif self.rendering == "matplotlib":

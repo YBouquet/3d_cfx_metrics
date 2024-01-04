@@ -2,13 +2,10 @@ import pickle
 import numpy as np
 import os 
 from collections import defaultdict
-from torch.utils.data import DataLoader
 from abc import ABCMeta, abstractmethod
-import logging
 from tqdm import tqdm
-from tqdm.asyncio import tqdm as atqdm
 
-from typing import Dict, List, Tuple
+from typing import Dict
 import torch
 import lpips
 
@@ -19,15 +16,12 @@ from chamfer_distance import ChamferDistance as chamfer_dist
 
 import asyncio
 from PIL import Image
+from torch.utils.data import DataLoader
 
 from .projection import Renderer
-
+from .dataset import Batch
 import pdb
 
-SFX_PCD = "point_cloud_"
-SFX_LATENT = "latent_code_"
-PFX_CE = "ce"
-PFX_OG = "original"
 
 RENDERING_MATPLOTLIB = "matplotlib"
 RENDERING_MITSUBA = "mitsuba"
@@ -35,37 +29,38 @@ RENDERING_MITSUBA = "mitsuba"
 LPIPS_PROX = "proximity"
 LPIPS_DIV = "diversity"
 
-class Batch():
-    def __init__(self, batch: Dict):
-        self.data = batch
 
-    @property
-    def pointclouds(self) -> Tuple[torch.Tensor]:
-        return self.data[SFX_PCD + PFX_OG], self.data[SFX_PCD + PFX_CE]
-    
-    @property
-    def latent_codes(self) -> Tuple[torch.Tensor]:
-        return self.data[SFX_LATENT + PFX_OG], self.data[SFX_LATENT + PFX_CE]
-    
-    @property
-    def sample_ids(self) -> List[int]:
-        return self.data["sample_id"]
-
-    @property
-    def ce_ids(self) -> List[int]:
-        return self.data["ce_id"]
-    
-    @property
-    def flipped(self) -> List[bool]:
-        flip_epoch = self.data["number_of_steps_flip"]
-        max_epochs = self.data["max_number_of_steps"]
-        return [(i<n) * 1 for i, n in zip(flip_epoch, max_epochs)]
-    
 
 class Metric(metaclass=ABCMeta):
-    def __init__(self, experiment: str, metric :str = None):
+    """
+    Abstract base class for defining metrics in experiments.
+
+    Attributes:
+        output_dir (str): The directory to store metric results.
+        output_file (str): The full path to the output file for storing metric results.
+        experiment (str): The name of the experiment associated with the metric.
+
+    Methods:
+        __init__(self, experiment: str, metric: str = None):
+            Initializes the Metric object.
+
+        evaluate(self, dataloader: DataLoader, verbose: bool = True) -> Dict:
+            Abstract method to evaluate the metric using the provided DataLoader.
+
+        get_results(self) -> Dict:
+            Abstract method to get the results of the metric evaluation.
+    """
+
+    def __init__(self, experiment: str, metric: str = None):
+        """
+        Initializes a Metric object.
+
+        Parameters:
+            experiment (str): The name of the experiment associated with the metric.
+            metric (str, optional): The specific metric identifier. Defaults to None.
+        """
         self.output_dir = os.path.join(experiment, "metrics")
-        if not(os.path.exists(self.output_dir)):
+        if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
         self.output_dir = os.path.join(self.output_dir, metric)
         self.output_file = self.output_dir + ".pkl"
@@ -73,17 +68,66 @@ class Metric(metaclass=ABCMeta):
 
     @abstractmethod
     def evaluate(self, dataloader: DataLoader, verbose: bool = True) -> Dict:
+        """
+        Abstract method to evaluate the metric using the provided DataLoader.
+
+        Parameters:
+            dataloader (DataLoader): DataLoader containing the data for metric evaluation.
+            verbose (bool, optional): Whether to print verbose output. Defaults to True.
+
+        Returns:
+            Dict: Results of the metric evaluation.
+        """
         pass
 
     @abstractmethod
     def get_results(self) -> Dict:
+        """
+        Abstract method to get the results of the metric evaluation.
+
+        Returns:
+            Dict: Results of the metric evaluation.
+        """
         pass
 
-class SyncMetric(Metric, metaclass = ABCMeta):
-    def __init__(self, experiment: str, metric :str = None):
+
+class SyncMetric(Metric, metaclass=ABCMeta):
+    """
+    Abstract subclass of Metric for synchronous metric evaluation.
+
+    This class extends the Metric class, providing a common structure for synchronous metric
+    evaluation on batches of data.
+
+    Methods:
+        __init__(self, experiment: str, metric: str = None):
+            Initializes the SyncMetric object.
+
+        evaluate(self, dataloader: DataLoader, verbose: bool = True) -> Dict:
+            Evaluates the metric synchronously on batches of data from the provided DataLoader.
+
+        measure(self, batch: Batch) -> None:
+            Abstract method to measure the metric on a single batch of data.
+    """
+
+    def __init__(self, experiment: str, metric: str = None):
+        """
+        Parameters:
+            experiment (str): The name of the experiment associated with the metric.
+            metric (str, optional): The specific metric identifier. Defaults to None.
+        """
         super().__init__(experiment, metric)
 
     def evaluate(self, dataloader: DataLoader, verbose: bool = True) -> Dict:
+        """
+        Evaluates the metric synchronously on batches of data from the provided DataLoader.
+
+        Parameters:
+            dataloader (DataLoader): DataLoader containing the data for metric evaluation.
+            verbose (bool, optional): Whether to print verbose output. Defaults to True.
+
+        Returns:
+            Dict: Results of the metric evaluation.
+        """
         iterator = tqdm(dataloader) if verbose else dataloader
         for batch in iterator:
             self.measure(Batch(batch))
@@ -91,32 +135,80 @@ class SyncMetric(Metric, metaclass = ABCMeta):
         with open(self.output_file, 'wb') as f:
             pickle.dump(results, f)
         return results
-      
+
     @abstractmethod
-    def measure(self, batch : Batch) -> None:
+    def measure(self, batch: Batch) -> None:
+        """
+        Abstract method to measure the metric on a single batch of data.
+
+        Parameters:
+            batch (Batch): Object representing a single batch of data.
+        """
         pass
 
+class AsyncMetric(Metric, metaclass=ABCMeta):
+    """
+    Abstract subclass of Metric for asynchronous metric evaluation.
 
-class AsyncMetric(Metric, metaclass = ABCMeta):
-    def __init__(self, experiment: str, metric :str = None):
+    This class extends the Metric class, providing a common structure for asynchronous metric
+    evaluation using asyncio and multiprocessing.
+
+    Attributes:
+        pool (Pool): Multiprocessing pool for parallel execution of asynchronous metric measures.
+
+    Methods:
+        __init__(self, experiment: str, metric: str = None):
+            Initializes the AsyncMetric object.
+
+        evaluate(self, dataloader: DataLoader, verbose: bool = True) -> Dict:
+            Evaluates the metric asynchronously on batches of data from the provided DataLoader.
+
+        async_measure(self, batch: Batch) -> None:
+            Abstract asynchronous method to measure the metric on a single batch of data.
+    """
+
+    def __init__(self, experiment: str, metric: str = None):
+        """
+        Initializes an AsyncMetric object.
+
+        Parameters:
+            experiment (str): The name of the experiment associated with the metric.
+            metric (str, optional): The specific metric identifier. Defaults to None.
+        """
         super().__init__(experiment, metric)
         self.pool = Pool(60)
 
     def evaluate(self, dataloader: DataLoader, verbose: bool = True) -> Dict:
+        """
+        Evaluates the metric asynchronously on batches of data from the provided DataLoader.
+
+        Parameters:
+            dataloader (DataLoader): DataLoader containing the data for metric evaluation.
+            verbose (bool, optional): Whether to print verbose output. Defaults to True.
+
+        Returns:
+            Dict: Results of the metric evaluation.
+        """
         async def async_aux(dataloader, verbose):
             batches = [self.async_measure(Batch(batch)) for batch in dataloader]
             await asyncio.gather(*batches)
-            
+
         asyncio.run(async_aux(dataloader, verbose))
-        print("all images accessible")
+        print("All images accessible")
         results = self.get_results()
         with open(self.output_file, 'wb') as f:
-            print("save results")
+            print("Save results")
             pickle.dump(dict(results), f)
         return results
-      
+
     @abstractmethod
-    async def async_measure(self, batch : Batch) -> None:
+    async def async_measure(self, batch: Batch) -> None:
+        """
+        Abstract asynchronous method to measure the metric on a single batch of data.
+
+        Parameters:
+            batch (Batch): Object representing a single batch of data.
+        """
         pass
 
 class FlipRate(SyncMetric):
@@ -130,7 +222,7 @@ class FlipRate(SyncMetric):
     def get_results(self) -> Dict:
         return {"flip_rate" : np.mean(self.flips)}
 
-class LNorm(SyncMetric):
+class PNorm(SyncMetric):
     def __init__(self, experiment: str, ord):
         super().__init__(experiment, metric = "lnorm"+str(ord))
         self.diffs = []
@@ -153,38 +245,151 @@ class LNorm(SyncMetric):
 
     def get_results(self) -> Dict:
         return {"norm" : np.mean(torch.cat(self.diffs, dim=0).cpu().numpy())}
-    
+
+
 class ChamferDistance(SyncMetric):
+    """
+    Metric class for computing Chamfer Distance between two point clouds.
+
+    This class extends the SyncMetric class and provides functionality for measuring the Chamfer
+    Distance between original and reconstructed point clouds in an experiment.
+
+    Attributes:
+        dist1 (list): List to store the first set of Chamfer distances.
+        dist2 (list): List to store the second set of Chamfer distances.
+        distance (chamfer_dist): Object for computing Chamfer Distance.
+
+    Methods:
+        __init__(self, experiment: str):
+            Initializes the ChamferDistance object.
+
+        measure(self, batch: Batch) -> None:
+            Measures the Chamfer Distance on a single batch of data.
+
+        my_mean(self, tensor) -> float:
+            Computes the mean of the tensor along two dimensions.
+
+        get_results(self) -> Dict:
+            Returns the computed Chamfer Distance sum as a dictionary.
+    """
+
     def __init__(self, experiment: str):
-        super().__init__(experiment, metric = "chamfer")
+        """
+        Initializes a ChamferDistance object.
+
+        Parameters:
+            experiment (str): The name of the experiment associated with the metric.
+        """
+        super().__init__(experiment, metric="chamfer")
         self.dist1 = []
         self.dist2 = []
         self.distance = chamfer_dist()
-    
+
     def measure(self, batch: Batch) -> None:
+        """
+        Measures the Chamfer Distance on a single batch of data.
+
+        Parameters:
+            batch (Batch): Object representing a single batch of data.
+        """
         og_data, ce_data = batch.pointclouds
-        dist1, dist2, _, _ = self.distance(og_data.permute(0,2,1).cuda(), ce_data.permute(0,2,1).cuda())
+        dist1, dist2, _, _ = self.distance(og_data.permute(0, 2, 1).cuda(), ce_data.permute(0, 2, 1).cuda())
         self.dist1.append(dist1.cpu())
         self.dist2.append(dist2.cpu())
 
-    def my_mean(self, tensor) :
-        assert(len(tensor.shape) == 2)
+    def my_mean(self, tensor) -> float:
+        """
+        Computes the mean of the tensor along two dimensions.
+
+        Parameters:
+            tensor: Tensor for which the mean is computed.
+
+        Returns:
+            float: The computed mean.
+        """
+        assert len(tensor.shape) == 2
         return torch.mean(torch.mean(tensor, dim=1), dim=0).item()
-    
+
     def get_results(self) -> Dict:
-        return {"dist1" : self.my_mean(torch.cat(self.dist1, dim = 0)), "dist2": self.my_mean(torch.cat(self.dist2, dim = 0))}
-        
-def generate_image(renderer, pcd: np.array, output_file: str) -> None:
-    if not(os.path.exists(output_file)) :
+        """
+        Returns the computed Chamfer Distance sum as a dictionary.
+
+        Returns:
+            Dict: Dictionary containing the computed Chamfer Distance sum.
+        """
+        return {"chamfer_dist_sum": self.my_mean(torch.cat(self.dist1, dim=0)) + self.my_mean(torch.cat(self.dist2, dim=0))}
+    
+
+def generate_image(renderer, pcd: np.ndarray, output_file: str) -> torch.Tensor:
+    """
+    Generate an image using a renderer and save it to a file or load from an existing file.
+
+    Parameters:
+        renderer: Renderer object used to apply the point cloud and generate the image.
+        pcd (np.ndarray): Numpy array representing the point cloud.
+        output_file (str): The path to the output file to save the generated image.
+
+    Returns:
+        torch.Tensor: The generated image as a torch tensor.
+
+    Raises:
+        FileNotFoundError: If the output_file is not found and the image cannot be loaded.
+    """
+    if not os.path.exists(output_file):
         np_image = renderer.apply(pcd)
         image = Image.fromarray(np_image.astype(np.uint8))
         image.save(output_file)
-    else :
-        np_image = np.array(Image.open(output_file))
-    return torch.tensor(np_image).permute(2,0,1).unsqueeze(0).float().cpu() / 255.
+    else:
+        try:
+            np_image = np.array(Image.open(output_file))
+        except FileNotFoundError as e:
+            raise FileNotFoundError(f"Could not load image from {output_file}.") from e
+        
+    return torch.tensor(np_image).permute(2, 0, 1).unsqueeze(0).float().cpu() / 255.
+
+
 
 class LPIPS(AsyncMetric):
-    def __init__(self, experiment: str, rendering_method: str): 
+    """
+    Metric class for computing LPIPS (Learned Perceptual Image Patch Similarity).
+
+    This class extends the AsyncMetric class and provides functionality for measuring LPIPS
+    between original and reconstructed images in an experiment.
+
+    Attributes:
+        rotations (np.ndarray): Array containing rotation matrices for image rendering.
+        renderer (Renderer): Renderer object used to apply the point cloud and generate images.
+        results (defaultdict): Dictionary to store LPIPS results.
+        lpips (lpips.LPIPS): LPIPS object for computing perceptual similarity.
+
+    Methods:
+        __init__(self, experiment: str, rendering_method: str):
+            Initializes the LPIPS object.
+
+        __render(self, pcd, foldernames):
+            Renders images asynchronously using multiprocessing.
+
+        async_measure(self, batch: Batch) -> None:
+            Asynchronously measures LPIPS on a single batch of data.
+
+        get_results(self) -> dict:
+            Returns the computed LPIPS results in the form of : .
+
+        __proximity(self) -> None:
+            Computes LPIPS proximity between original and reconstructed point clouds.
+
+        __diversity(self) -> None:
+            Computes LPIPS diversity among a set of multiple counterfactuals from the same original point cloud.
+    """
+
+    def __init__(self, experiment: str, rendering_method: str):
+        """
+        Initializes an LPIPS object.
+
+        Parameters:
+            experiment (str): The name of the experiment associated with the metric.
+            rendering_method (str): The method used for rendering images.
+        """
         super().__init__(experiment, metric="lpips")
         os.makedirs(self.output_dir, exist_ok=True)
         
